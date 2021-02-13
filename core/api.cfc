@@ -909,11 +909,21 @@
 	<cffunction name="getRequestBody" access="private" output="false" hint="Gets request body data, which CF doesn't do automatically for some verbs">
 		<!--- Special thanks to Jason Dean (@JasonPDean) and Ray Camden (@ColdFusionJedi) who helped me figure out how to do this --->
 		<cfset var body = getHTTPRequestData().content />
-		<!--- on input with content-type "application/json" CF seems to expose it as binary data. Here we convert it back to plain text --->
-		<cfif isBinary(body)>
-			<cfset body = charsetEncode(body, "UTF-8") />
-		</cfif>
-		<cfreturn body />
+    <!--- Get content type --->
+    <cfset var contentType = getHTTPRequestData().headers['Content-Type']>
+    <!--- for multipart/form-data requests that use a verb other than POST --->
+    <cfif compareNoCase(getHTTPRequestData().method,"post") neq 0 and listGetAt(contentType,1,';') eq "multipart/form-data">
+      <!--- parse the binary content --->
+      <cfset structAppend(form, parseBinaryContent(body, contentType))>
+      <!--- leave the body empty --->
+      <cfset body = "">
+    <cfelse>
+      <!--- on input with content-type "application/json" CF seems to expose it as binary data. Here we convert it back to plain text --->
+      <cfif isBinary(body)>
+        <cfset body = charsetEncode(body, "UTF-8") />
+      </cfif>
+    </cfif>      	
+    <cfreturn body />
 	</cffunction>
 
 	<cffunction name="contentTypeIsSupported" access="private" output="false">
@@ -1495,5 +1505,32 @@
 		<cfreturn result />
 
 	</cffunction>
+
+  <cffunction name="parseBinaryContent" access="private" returntype="struct" output="false">
+    <cfargument name="content" type="any" required="true">
+    <cfargument name="contentType" type="string" required="true">
+    <cfset var result = structNew()>
+    <!--- see https://stackoverflow.com/a/43669866 ---> 
+    <cfset var dataSource = createObject("java","javax.mail.util.ByteArrayDataSource").init( arguments.content, javaCast( "string", arguments.contentType ) )>
+    <cfset var mimeParts = createObject("java","javax.mail.internet.MimeMultipart").init( dataSource )>
+    <cfloop from="1" to="#mimeParts.getCount()#" index="i">
+      <cfset var bodyPart = mimeParts.getBodyPart( javaCast( "int", i-1 ) )>
+      <!--- we use the getHeader() method b/c getDisposition() does not the full header value --->
+      <cfset var rawContentDisposition = bodyPart.getHeader( javaCast( "string", "Content-Disposition" ) )[1]>
+      <cfset var contentDisposition = createObject("java","javax.mail.internet.ContentDisposition").init( rawContentDisposition )>
+      <cfset var name = contentDisposition.getParameter( javaCast( "string", "name" ) )>
+      <cfset var fileName = contentDisposition.getParameter( 'filename' )>
+      <!--- we're dealing with an uploaded file, save it to temp folder and add the absolute path to the result --->
+      <cfif isDefined( "local.fileName" )>
+        <cfset var tempFile = createObject("java","java.io.File").init( getTempFile( getTempDirectory(), 'neotmp' ) )>
+        <cfset bodyPart.saveFile( tempFile )>
+        <cfset result[ uCase( name ) ] = tempFile.getAbsolutePath()>
+      <!--- we're dealing with a "simple" value, just add to the result --->
+      <cfelse>
+        <cfset result[ uCase( name ) ] = bodyPart.getContent().toString()>
+      </cfif>
+    </cfloop>
+    <cfreturn result>
+  </cffunction>
 
 </cfcomponent>
